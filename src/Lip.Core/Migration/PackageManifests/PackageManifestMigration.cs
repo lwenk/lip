@@ -337,13 +337,44 @@ public static partial class PackageManifestMigration {
 
     return node.Deserialize<PackageManifest>()!;
 
+    // Only names that exist as fields of the manifest count as placeholders. Text such as
+    // `$(date)` inside a script must stay verbatim, otherwise it is replaced by an unrelated
+    // Scriban builtin.
+    bool IsManifestField(string name) {
+      object? current = model;
+
+      foreach (string segment in name.Split('.')) {
+        current = current switch {
+          Dictionary<string, object> dictionary when dictionary.TryGetValue(segment, out object? value) => value,
+          JsonElement { ValueKind: JsonValueKind.Object } element when element.TryGetProperty(segment, out JsonElement property) => property,
+          _ => null,
+        };
+
+        if (current is null) {
+          return false;
+        }
+      }
+
+      return true;
+    }
+
     void ProcessNode(JsonNode? current) {
       switch (current) {
         case null:
           return;
 
         case JsonValue value when value.TryGetValue(out string? s): {
-            string newValue = Scriban.Template.Parse(s).Render(model);
+            // Manifests already published as format version 3 may still use the legacy
+            // `$(variable)` placeholder, so convert it the same way the v1/v2 migrations do.
+            // Leaving it untouched would silently produce a URL containing literal '$(version)'.
+            string converted = TemplateVariableRegex().Replace(s, match => {
+              string name = match.Groups[1].Value;
+
+              return IsManifestField(name)
+                  ? "{{" + name + "}}"
+                  : match.Value;
+            });
+            string newValue = Scriban.Template.Parse(converted).Render(model);
 
             value.ReplaceWith(newValue);
 

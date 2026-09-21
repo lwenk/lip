@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Lip.Core.Entities;
 using Semver;
 
@@ -72,5 +73,64 @@ public class PackageManifestTests {
 
     // Act & Assert
     Assert.Throws<KeyNotFoundException>(() => manifest.GetVariant("nonexistent"));
+  }
+
+  [Fact]
+  public void GetVariant_OverlappingVariants_DeclareSameDependency_MergesWithoutThrowing() {
+    // Arrange
+    PackageId dependency = new("github.com/test/dependency", "");
+    PackageManifest manifest = new() {
+      Path = "github.com/test/valid",
+      Version = new SemVersion(1, 0, 0),
+      Variants = [
+        new() {
+          Label = "default",
+          Platform = "",
+          Dependencies = new Dictionary<PackageId, SemVersionRange> {
+            { dependency, SemVersionRange.Parse("1.0.*") }
+          }
+        },
+        new() {
+          Label = "default",
+          Platform = RuntimeInformation.RuntimeIdentifier,
+          Dependencies = new Dictionary<PackageId, SemVersionRange> {
+            { dependency, SemVersionRange.Parse("2.0.*") }
+          }
+        }
+      ]
+    };
+
+    // Act
+    PackageManifestVariant result = manifest.GetVariant("default");
+
+    // Assert
+    Assert.Equal(SemVersionRange.Parse("1.0.*"), result.Dependencies[dependency]);
+  }
+
+  [Fact]
+  public void GetVariant_OverlappingVariants_DeclareSameScriptPhase_FirstOneWins() {
+    // Arrange
+    PackageManifest manifest = new() {
+      Path = "github.com/test/valid",
+      Version = new SemVersion(1, 0, 0),
+      Variants = [
+        new() {
+          Label = "default",
+          Platform = RuntimeInformation.RuntimeIdentifier,
+          Scripts = new PackageManifestScripts { Install = ["echo specific"] }
+        },
+        new() {
+          Label = "default",
+          Platform = "",
+          Scripts = new PackageManifestScripts { Install = ["echo general"] }
+        }
+      ]
+    };
+
+    // Act
+    PackageManifestVariant result = manifest.GetVariant("default");
+
+    // Assert
+    Assert.Equal(["echo specific"], result.Scripts.Install);
   }
 }

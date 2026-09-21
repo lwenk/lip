@@ -370,6 +370,79 @@ public class PackageManifestMigrationTests {
     Assert.Throws<NotSupportedException>(() => PackageManifestMigration.Migrate(doc));
   }
 
+  [Fact]
+  public void Migrate_V3ManifestWithLegacyPlaceholders_RendersThem() {
+    // Manifests published as version 3 can still contain the legacy `$(variable)` placeholder.
+    string textV3 = """
+            {
+                "format_version": 3,
+                "format_uuid": "289f771f-2c9a-4d73-9f3f-8492495a924d",
+                "tooth": "github.com/GroupMountain/ThrowableFireball",
+                "version": "1.0.0",
+                "info": {
+                    "name": "ThrowableFireball"
+                },
+                "variants": [
+                    {
+                        "assets": [
+                            {
+                                "type": "zip",
+                                "urls": [
+                                    "https://github.com/GroupMountain/ThrowableFireball/releases/download/v$(version)/ThrowableFireball-windows-x64.zip",
+                                    "https://example.com/$(info.name)/$(version).zip"
+                                ]
+                            }
+                        ]
+                    }
+                ]
+            }
+            """;
+
+    using JsonDocument doc = JsonDocument.Parse(textV3);
+
+    // Act
+    PackageManifest result = PackageManifestMigration.Migrate(doc);
+
+    // Assert
+    Assert.Equal(
+        [
+            "https://github.com/GroupMountain/ThrowableFireball/releases/download/v1.0.0/ThrowableFireball-windows-x64.zip",
+            "https://example.com/ThrowableFireball/1.0.0.zip"
+        ],
+        result.Variants.Single().Assets.Single().Urls.Select(url => url.ToString()));
+  }
+
+  [Fact]
+  public void Migrate_V3ManifestWithUnrelatedDollarParentheses_KeepsThemVerbatim() {
+    // `$(date)` is a shell expansion, not a lip placeholder, and Scriban happens to expose its own
+    // `date` object, so rendering it would corrupt the script.
+    string textV3 = """
+            {
+                "format_version": 3,
+                "format_uuid": "289f771f-2c9a-4d73-9f3f-8492495a924d",
+                "tooth": "github.com/test/pkg",
+                "version": "1.0.0",
+                "variants": [
+                    {
+                        "scripts": {
+                            "pre_install": ["echo $(date)", "echo $(not_a_manifest_field)"]
+                        }
+                    }
+                ]
+            }
+            """;
+
+    using JsonDocument doc = JsonDocument.Parse(textV3);
+
+    // Act
+    PackageManifest result = PackageManifestMigration.Migrate(doc);
+
+    // Assert
+    Assert.Equal(
+        ["echo $(date)", "echo $(not_a_manifest_field)"],
+        result.Variants.Single().Scripts.PreInstall);
+  }
+
   private static void AssertJsonEqual(string expected, string actual) {
     using JsonDocument expectedDoc = JsonDocument.Parse(expected);
     using JsonDocument actualDoc = JsonDocument.Parse(actual);
