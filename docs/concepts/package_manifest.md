@@ -84,8 +84,8 @@ A variant defines platform-specific or labeled package configurations. When reso
 | `platform` | `string` | `""` | Target platform ([.NET RID](https://learn.microsoft.com/dotnet/core/rid-catalog)). Empty matches all. Supports glob matching. |
 | `dependencies` | `object` | `{}` | Map of package ID to [semver range](https://github.com/maxhauser/semver#ranges). |
 | `assets` | `array` | `[]` | Asset definitions. See [Asset](#asset). |
-| `preserve_files` | `string[]` | `[]` | Glob patterns for files to preserve during uninstall. |
-| `remove_files` | `string[]` | `[]` | Glob patterns for additional files to remove during uninstall. |
+| `preserve_files` | `string[]` | `[]` | Glob patterns for files to preserve during uninstall. A pattern also matches on the bare file name, so `config.json` protects that file anywhere in the workspace. |
+| `remove_files` | `string[]` | `[]` | Glob patterns for additional files to remove during uninstall. A pattern is matched against the workspace-relative path only, so `config` means the workspace's own `config` entry and not a same-named entry deeper in the tree. A matched directory is removed with everything below it. |
 | `scripts` | `object` | `{}` | Lifecycle scripts. See [Scripts](#scripts). |
 
 ### Asset

@@ -84,8 +84,8 @@
 | `platform` | `string` | `""` | 目标平台（[.NET RID](https://learn.microsoft.com/dotnet/core/rid-catalog)）。为空时匹配全部，支持 glob。 |
 | `dependencies` | `object` | `{}` | 包 ID 到 [semver 范围](https://github.com/maxhauser/semver#ranges) 的映射。 |
 | `assets` | `array` | `[]` | 资源定义。见 [Asset](#asset)。 |
-| `preserve_files` | `string[]` | `[]` | 卸载时保留文件的 glob 模式。 |
-| `remove_files` | `string[]` | `[]` | 卸载时额外删除文件的 glob 模式。 |
+| `preserve_files` | `string[]` | `[]` | 卸载时保留文件的 glob 模式。模式同时按裸文件名匹配，因此 `config.json` 可保护工作区内任意位置的同名文件。 |
+| `remove_files` | `string[]` | `[]` | 卸载时额外删除文件的 glob 模式。模式只按工作区相对路径匹配，因此 `config` 指工作区自己的 `config` 条目，而非树中更深处的同名条目。命中目录时会连同其中内容一起删除。 |
 | `scripts` | `object` | `{}` | 生命周期脚本。见 [Scripts](#scripts)。 |
 
 ### Asset
