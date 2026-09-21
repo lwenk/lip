@@ -1,18 +1,18 @@
 # lip update
 
-更新包。
+更新包。不指定包时，会把所有显式安装的包更新到各自的最新版本，并在做任何更改前列出各包的版本变化。
 
 ## 概要
 
 ```shell
-lip update <PACKAGES> [options]
+lip update [<PACKAGES>] [options]
 ```
 
 ## 参数
 
 | 参数 | 说明 |
 | --- | --- |
-| `<PACKAGES>` | 要更新的包。支持与 [`lip install`](./install.md#参数) 相同的格式。 |
+| `[<PACKAGES>]` | 要更新的包。支持与 [`lip install`](./install.md#参数) 相同的格式。省略时更新所有显式安装的包。 |
 
 ## 选项
 

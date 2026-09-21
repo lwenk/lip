@@ -1,18 +1,18 @@
 # lip update
 
-Update packages.
+Update packages. With no package named, every explicitly installed package is updated to its newest release, and the version transitions are listed before anything changes.
 
 ## Synopsis
 
 ```shell
-lip update <PACKAGES> [options]
+lip update [<PACKAGES>] [options]
 ```
 
 ## Arguments
 
 | Argument | Description |
 | --- | --- |
-| `<PACKAGES>` | The packages to update. Accepts the same formats as [`lip install`](./install.md#arguments). |
+| `[<PACKAGES>]` | The packages to update. Accepts the same formats as [`lip install`](./install.md#arguments). Omit to update every explicitly installed package. |
 
 ## Options
 
