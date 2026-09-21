@@ -54,7 +54,8 @@ public class DependencySolver(
   private readonly IUserInteraction _userInteraction = userInteraction;
 
   public async Task<IEnumerable<PackageSpec>> Solve(IEnumerable<PackageReqt> requirements) {
-    await _userInteraction.PrintInfo($"Resolving dependencies for: {string.Join(", ", requirements)}");
+    await _userInteraction.PrintVerbose($"Resolving dependencies for: {string.Join(", ", requirements)}");
+    await _userInteraction.PrintInfo("Resolving dependencies...");
 
     Dictionary<PackageId, HashSet<SemVersion>> candidates = [];
 
@@ -70,9 +71,7 @@ public class DependencySolver(
       }
     }
 
-    HashSet<PackageId> roots = [.. requirements.Select(x => x.Id)];
-
-    Dictionary<PackageId, SemVersion> solution = await Backtrack(candidates, [], roots)
+    Dictionary<PackageId, SemVersion> solution = await Backtrack(candidates, [])
         ?? throw new InvalidOperationException("Cannot find a valid state to satisfy all dependencies.");
 
     List<DependencyNode> nodes = [];
@@ -88,8 +87,7 @@ public class DependencySolver(
 
   private async Task<Dictionary<PackageId, SemVersion>?> Backtrack(
       Dictionary<PackageId, HashSet<SemVersion>> candidates,
-      Dictionary<PackageId, SemVersion> selected,
-      HashSet<PackageId> roots) {
+      Dictionary<PackageId, SemVersion> selected) {
     if (candidates.Count == 0) {
       return selected;
     }
@@ -97,7 +95,7 @@ public class DependencySolver(
     // Fail-first heuristic: Pick candidate with fewest version options.
     (PackageId nextId, HashSet<SemVersion> versions) = candidates.MinBy(x => x.Value.Count);
 
-    await _userInteraction.PrintInfo(
+    await _userInteraction.PrintVerbose(
         $"Considering {nextId} with {versions.Count} candidate version(s)");
 
     IOrderedEnumerable<SemVersion> sortedVersions = versions
@@ -107,58 +105,73 @@ public class DependencySolver(
     foreach (SemVersion version in sortedVersions.Reverse()) {
       Dictionary<PackageId, SemVersion> nextSelected = new(selected) { [nextId] = version };
 
-      Dictionary<PackageId, HashSet<SemVersion>> nextCandidates = new(candidates);
-      nextCandidates.Remove(nextId);
+      // TryPropagate returns a fresh candidate map, so candidates owned by enclosing frames are
+      // left untouched and survive a backtrack.
+      if (await TryPropagate(nextId, version, nextSelected, candidates)
+          is not Dictionary<PackageId, HashSet<SemVersion>> nextCandidates) {
+        continue;
+      }
 
-      if (await TryPropagate(nextId, version, nextSelected, nextCandidates)) {
-        Dictionary<PackageId, SemVersion>? result = await Backtrack(nextCandidates, nextSelected, roots);
-        if (result is not null) {
-          return result;
-        }
+      Dictionary<PackageId, SemVersion>? result = await Backtrack(nextCandidates, nextSelected);
+      if (result is not null) {
+        return result;
       }
     }
 
     return null;
   }
 
-  private async Task<bool> TryPropagate(
+  /// <returns>
+  /// A new candidate map with the constraints of the given package version applied, or
+  /// <see langword="null"/> if those constraints cannot be satisfied. Version sets held by
+  /// <paramref name="candidates"/> are never mutated, because they are shared with enclosing
+  /// frames that must stay intact for backtracking.
+  /// </returns>
+  private async Task<Dictionary<PackageId, HashSet<SemVersion>>?> TryPropagate(
       PackageId packageId,
       SemVersion version,
       Dictionary<PackageId, SemVersion> currentSelection,
-      Dictionary<PackageId, HashSet<SemVersion>> currentCandidates) {
+      Dictionary<PackageId, HashSet<SemVersion>> candidates) {
     IEnumerable<PackageReqt> dependencies = await GetDependencies(new PackageSpec(packageId, version));
+
+    Dictionary<PackageId, HashSet<SemVersion>> nextCandidates = new(candidates);
+    nextCandidates.Remove(packageId);
 
     foreach (PackageReqt req in dependencies) {
       // Conflict with already selected package?
       if (currentSelection.TryGetValue(req.Id, out SemVersion? selectedVer)) {
         if (!req.VersionRange.Contains(selectedVer)) {
-          return false;
+          return null;
 
         }
 
         continue; // Constraint satisfied.
       }
 
-      // Constrain remaining candidates
-      if (currentCandidates.TryGetValue(req.Id, out HashSet<SemVersion>? options)) {
-        options.RemoveWhere(v => !req.VersionRange.Contains(v));
+      // Constrain remaining candidates. Always assign a new set instead of narrowing the existing
+      // one in place.
+      if (candidates.TryGetValue(req.Id, out HashSet<SemVersion>? options)) {
+        HashSet<SemVersion> narrowed = [.. options.Where(req.VersionRange.Contains)];
 
-        if (options.Count == 0) {
-          return false;
+        if (narrowed.Count == 0) {
+          return null;
         }
+
+        nextCandidates[req.Id] = narrowed;
       } else {
         // Discovery of new dependency
         IEnumerable<SemVersion> available = await _packageRegistry.GetAvailableVersions(req.Id);
         HashSet<SemVersion> compatible = [.. available.Where(req.VersionRange.Contains)];
 
         if (compatible.Count == 0) {
-          return false;
+          return null;
         }
-        currentCandidates[req.Id] = compatible;
+
+        nextCandidates[req.Id] = compatible;
       }
     }
 
-    return true;
+    return nextCandidates;
   }
 
   private async Task<IEnumerable<PackageReqt>> GetDependencies(PackageSpec spec) {

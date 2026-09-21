@@ -106,4 +106,70 @@ public class DependencySolverTests {
     // Act & Assert
     await Assert.ThrowsAsync<InvalidOperationException>(() => _solver.Solve([reqtA, reqtB]));
   }
+
+  [Fact]
+  public async Task Solve_BacktrackingBetweenVersions_KeepsCandidateVersionsOfOtherPackages() {
+    // Arrange
+    PackageId pkgA = new("github.com/test/a", string.Empty);
+    PackageId pkgX = new("github.com/test/x", string.Empty);
+    PackageId pkgY = new("github.com/test/y", string.Empty);
+
+    SemVersion verA1 = new(1, 0, 0);
+    SemVersion verA2 = new(2, 0, 0);
+    SemVersion verX1 = new(1, 0, 0);
+    SemVersion verX2 = new(2, 0, 0);
+    SemVersion verY1 = new(1, 0, 0);
+
+    // pkg-a 2.0.0 is the newest version, so the solver tries it first. It narrows pkg-x down to
+    // 1.x before failing on the unsatisfiable pkg-y dependency. pkg-a 1.0.0 needs 2.x of pkg-x
+    // afterwards, so the versions dropped while exploring the failed branch must still be
+    // available when the solver backtracks.
+    _mockRegistry.Setup(r => r.GetAvailableVersions(pkgA))
+        .ReturnsAsync(new[] { verA1, verA2 }.Order(SemVersion.PrecedenceComparer));
+    _mockRegistry.Setup(r => r.GetAvailableVersions(pkgX))
+        .ReturnsAsync(new[] { verX1, verX2 }.Order(SemVersion.PrecedenceComparer));
+    _mockRegistry.Setup(r => r.GetAvailableVersions(pkgY))
+        .ReturnsAsync(new[] { verY1 }.Order(SemVersion.PrecedenceComparer));
+
+    _mockRegistry.Setup(r => r.GetPackageManifest(new PackageSpec(pkgA, verA2)))
+        .ReturnsAsync(CreateManifest(pkgA.Path, verA2,
+            (pkgX, SemVersionRange.Parse("1.0.*")),
+            (pkgY, SemVersionRange.Parse("3.0.*"))));
+    _mockRegistry.Setup(r => r.GetPackageManifest(new PackageSpec(pkgA, verA1)))
+        .ReturnsAsync(CreateManifest(pkgA.Path, verA1,
+            (pkgX, SemVersionRange.Parse("2.0.*"))));
+    _mockRegistry.Setup(r => r.GetPackageManifest(new PackageSpec(pkgX, verX1)))
+        .ReturnsAsync(CreateManifest(pkgX.Path, verX1));
+    _mockRegistry.Setup(r => r.GetPackageManifest(new PackageSpec(pkgX, verX2)))
+        .ReturnsAsync(CreateManifest(pkgX.Path, verX2));
+
+    // Act
+    IEnumerable<PackageSpec> result = await _solver.Solve([
+        new PackageReqt(pkgA, SemVersionRange.All),
+        new PackageReqt(pkgX, SemVersionRange.All),
+    ]);
+
+    // Assert
+    Assert.Equal(2, result.Count());
+    Assert.Contains(new PackageSpec(pkgA, verA1), result);
+    Assert.Contains(new PackageSpec(pkgX, verX2), result);
+  }
+
+  private static PackageManifest CreateManifest(
+      string path,
+      SemVersion version,
+      params (PackageId Id, SemVersionRange Range)[] dependencies) {
+    return new PackageManifest {
+      Path = path,
+      Version = version,
+      Variants =
+        [
+            new PackageManifestVariant
+                {
+                    Label = string.Empty,
+                    Dependencies = dependencies.ToDictionary(d => d.Id, d => d.Range)
+                }
+        ]
+    };
+  }
 }
