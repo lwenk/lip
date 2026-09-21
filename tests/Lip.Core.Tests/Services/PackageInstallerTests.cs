@@ -209,7 +209,7 @@ public class PackageInstallerTests {
           }
 
           executionOrder.Add(command);
-          return Task.CompletedTask;
+          return Task.FromResult("");
         });
     _mockWorkspaceService.Setup(w => w.AddInstalledPackage(
             pkgSpec,
@@ -336,7 +336,7 @@ public class PackageInstallerTests {
           }
 
           executionOrder.Add(command);
-          return Task.CompletedTask;
+          return Task.FromResult("");
         });
     _mockWorkspaceService.Setup(w => w.RemoveInstalledPackage(pkgSpec))
         .Callback(() => executionOrder.Add("state"))

@@ -5,12 +5,20 @@ namespace Lip.Daemon;
 public class RpcUserInteraction(IClientContract clientContract) : IUserInteraction {
   private readonly IClientContract _clientContract = clientContract;
 
+  public int? ConsoleWidth => null;
+
   public async Task PrintError(string message) {
     await _clientContract.PrintError(message);
   }
 
   public async Task PrintInfo(string message) {
     await _clientContract.PrintInfo(message);
+  }
+
+  public async Task PrintVerbose(string message) {
+    // Verbosity is aimed at the diagnostic log, which the daemon writes on its own, so it is not
+    // forwarded over the RPC channel.
+    await Task.CompletedTask;
   }
 
   public async Task PrintSuccess(string message) {
@@ -21,11 +29,11 @@ public class RpcUserInteraction(IClientContract clientContract) : IUserInteracti
     await _clientContract.PrintWarning(message);
   }
 
-  public async Task RunWithProgress(string message, Func<IProgress<double>, Task> action) {
+  public async Task RunWithProgress(string message, Func<IProgress<TransferProgress>, Task> action) {
     string progressId = Guid.NewGuid().ToString();
 
-    Progress<double> progress = new(p => {
-      _clientContract.ReportProgress(progressId, message, p);
+    Progress<TransferProgress> progress = new(update => {
+      _clientContract.ReportProgress(progressId, message, update.Percentage);
     });
 
     await action(progress);

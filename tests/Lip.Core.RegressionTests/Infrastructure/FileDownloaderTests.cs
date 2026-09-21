@@ -8,9 +8,9 @@ namespace Lip.Core.RegressionTests.Infrastructure;
 public class FileDownloaderTests {
   private static IUserInteraction CreateNoOpUserInteraction() {
     Mock<IUserInteraction> mock = new();
-    mock.Setup(u => u.RunWithProgress(It.IsAny<string>(), It.IsAny<Func<IProgress<double>, Task>>()))
-        .Returns((string _, Func<IProgress<double>, Task> action) =>
-            action(new Progress<double>()));
+    mock.Setup(u => u.RunWithProgress(It.IsAny<string>(), It.IsAny<Func<IProgress<TransferProgress>, Task>>()))
+        .Returns((string _, Func<IProgress<TransferProgress>, Task> action) =>
+            action(new Progress<TransferProgress>()));
     return mock.Object;
   }
 

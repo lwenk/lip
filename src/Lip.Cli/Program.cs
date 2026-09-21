@@ -1,4 +1,6 @@
-﻿using System.Reflection;
+﻿using System.IO.Abstractions;
+using System.Reflection;
+using System.Text;
 using Lip.Cli;
 using Lip.Cli.Commands;
 using Lip.Core.Infrastructure;
@@ -8,9 +10,24 @@ using Semver;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
-ConsoleUserInteraction userInteraction = new();
+// Windows consoles default to the ANSI code page, which turns the check marks and box drawing
+// characters Spectre.Console emits into question marks or mojibake.
+try {
+  Console.OutputEncoding = Encoding.UTF8;
+}
+catch (IOException) {
+  // Some hosts refuse the change. Output degrades, but the command still runs.
+}
+
+DiagnosticLog diagnosticLog = new(new FileSystem());
+
+// The log is shared with the interaction facade so that verbose detail from the core services is
+// recorded alongside the run header and any unhandled exception.
+ConsoleUserInteraction userInteraction = new(diagnosticLog);
 
 LipClient lipClient = await LipClient.Create(userInteraction);
+
+diagnosticLog.WriteHeader(Environment.CommandLine);
 
 ServiceCollection services = new();
 
@@ -30,26 +47,15 @@ app.Configure(config => {
       .InformationalVersion!).ToString());
 
   config.SetExceptionHandler((ex, resolver) => {
+    diagnosticLog.WriteException(ex);
+
     IAnsiConsole console = AnsiConsole.Create(new() {
       Out = new AnsiConsoleOutput(Console.Error)
     });
 
-    if (ex is AggregateException aggregateException) {
-      AggregateException flattenedException = aggregateException.Flatten();
-
-      if (flattenedException.InnerExceptions.Count == 1) {
-        console.WriteException(flattenedException.InnerExceptions[0], ExceptionFormats.ShortenEverything);
-      } else {
-        console.MarkupLine($"[red]Unhandled aggregate exception ({flattenedException.InnerExceptions.Count} inner exceptions)[/]");
-
-        for (int index = 0; index < flattenedException.InnerExceptions.Count; index++) {
-          console.MarkupLine($"[red]--- Inner #{index + 1} ---[/]");
-          console.WriteException(flattenedException.InnerExceptions[index], ExceptionFormats.ShortenEverything);
-        }
-      }
-    } else {
-      console.WriteException(ex, ExceptionFormats.ShortenEverything);
-    }
+    console.MarkupLine($"[bold red]✗ {GetErrorMessage(ex).EscapeMarkup()}[/]");
+    console.MarkupLine($"[grey]Details were written to {diagnosticLog.Path.EscapeMarkup()}[/]");
+    console.MarkupLine("[grey]Attach that file when reporting this issue.[/]");
 
     return 1;
   });
@@ -94,5 +100,33 @@ app.Configure(config => {
   config.AddCommand<VersionsCommand>("versions")
       .WithDescription("Shows available versions for a package");
 });
+
+// Reduces an exception tree to the one line that is worth showing on the terminal. The full tree,
+// including every inner exception, is written to the diagnostic log instead.
+static string GetErrorMessage(Exception exception) {
+  if (exception is not AggregateException aggregateException) {
+    return exception.Message;
+  }
+
+  AggregateException flattenedException = aggregateException.Flatten();
+
+  // AggregateException appends the message of every inner exception to its own, so only the part
+  // written at the call site is shown here. The inner messages are all in the diagnostic log.
+  string message = flattenedException.Message;
+  int innerMessagesStart = message.IndexOf(" (", StringComparison.Ordinal);
+
+  if (innerMessagesStart > 0) {
+    message = message[..innerMessagesStart];
+  }
+
+  if (message.Length > 0
+      && !message.StartsWith("One or more errors occurred.", StringComparison.Ordinal)) {
+    return message;
+  }
+
+  return flattenedException.InnerExceptions.Count == 1
+      ? flattenedException.InnerExceptions[0].Message
+      : "More than one error occurred.";
+}
 
 return await app.RunAsync(args);

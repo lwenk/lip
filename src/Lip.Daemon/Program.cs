@@ -1,14 +1,18 @@
-﻿using System.Reflection;
+﻿using System.IO.Abstractions;
+using System.Reflection;
+using Lip.Core.Infrastructure;
 using Lip.Daemon;
 using Lip.Daemon.Commands;
 using Microsoft.Extensions.DependencyInjection;
 using Semver;
-using Spectre.Console;
 using Spectre.Console.Cli;
 
 ServiceCollection services = new();
 TypeRegistrar registrar = new(services);
 CommandApp app = new(registrar);
+
+DiagnosticLog diagnosticLog = new(new FileSystem());
+diagnosticLog.WriteHeader(Environment.CommandLine);
 
 app.Configure(config => {
   config.SetApplicationName("lipd");
@@ -19,26 +23,11 @@ app.Configure(config => {
       .InformationalVersion!).ToString());
 
   config.SetExceptionHandler((ex, resolver) => {
-    IAnsiConsole console = AnsiConsole.Create(new() {
-      Out = new AnsiConsoleOutput(Console.Error)
-    });
+    diagnosticLog.WriteException(ex);
 
-    if (ex is AggregateException aggregateException) {
-      AggregateException flattenedException = aggregateException.Flatten();
-
-      if (flattenedException.InnerExceptions.Count == 1) {
-        console.WriteException(flattenedException.InnerExceptions[0], ExceptionFormats.ShortenEverything);
-      } else {
-        console.MarkupLine($"[red]Unhandled aggregate exception ({flattenedException.InnerExceptions.Count} inner exceptions)[/]");
-
-        for (int index = 0; index < flattenedException.InnerExceptions.Count; index++) {
-          console.MarkupLine($"[red]--- Inner #{index + 1} ---[/]");
-          console.WriteException(flattenedException.InnerExceptions[index], ExceptionFormats.ShortenEverything);
-        }
-      }
-    } else {
-      console.WriteException(ex, ExceptionFormats.ShortenEverything);
-    }
+    // Standard output carries the JSON-RPC stream, so only standard error may be written to.
+    Console.Error.WriteLine($"lipd: {ex.Message}");
+    Console.Error.WriteLine($"Details were written to {diagnosticLog.Path}");
 
     return 1;
   });
