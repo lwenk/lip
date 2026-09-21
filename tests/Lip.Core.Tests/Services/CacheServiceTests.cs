@@ -97,4 +97,23 @@ public class CacheServiceTests {
     // Assert - directory should be deleted
     Assert.False(mockFileSystem.Directory.Exists(cachePath));
   }
+
+  [Fact]
+  public async Task Clean_DeletesAbandonedTempFiles() {
+    // Arrange
+    string tempPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "lip", "temp");
+    MockFileSystem mockFileSystem = new(new Dictionary<string, MockFileData>
+    {
+            { Path.Combine(tempPath, "partial-file"), new MockFileData("partial") }
+        });
+    var mockUserInteraction = new Mock<IUserInteraction>();
+    CacheService service = new(mockFileSystem, mockUserInteraction.Object);
+
+    // Act
+    await service.Clean();
+
+    // Assert
+    Assert.False(mockFileSystem.Directory.Exists(tempPath));
+  }
 }
