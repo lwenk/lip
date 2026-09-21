@@ -27,8 +27,7 @@ public class SourceServiceTests {
         _mockGitRunner.Object,
         _mockUserInteraction.Object,
         _mockCacheService.Object,
-        githubProxy: null,
-        goModuleProxy: new Url("https://proxy.golang.org"));
+        proxySelector: new StubProxySelector());
   }
 
   [Fact]
@@ -112,14 +111,13 @@ public class SourceServiceTests {
   }
 
   [Fact]
-  public async Task Get_PackageSpec_WithGithubProxy_UsesProxy() {
+  public async Task Get_PackageSpec_GitClone_PrefixesTheMirrorWithTheWholeRepositoryUrl() {
     SourceService serviceWithProxy = new(
         _mockFileDownloader.Object,
         _mockGitRunner.Object,
         _mockUserInteraction.Object,
         _mockCacheService.Object,
-        githubProxy: new Url("https://ghproxy.com"),
-        goModuleProxy: new Url("https://proxy.golang.org"));
+        proxySelector: new StubProxySelector(githubSources: [new Url("https://ghproxy.com")]));
 
     PackageSpec pkgSpec = new(new PackageId("github.com/test/repo", string.Empty), new SemVersion(1, 0, 0));
     string root = Path.GetPathRoot(Environment.CurrentDirectory) ?? "/";
@@ -131,12 +129,99 @@ public class SourceServiceTests {
     _mockCacheService.Setup(c => c.GetOrCreateFile(It.IsAny<string>(), It.IsAny<Func<IFileInfo, Task>>()))
         .ThrowsAsync(new Exception("Go Proxy failed"));
 
-    _mockCacheService.Setup(c => c.GetOrCreateDirectory(It.Is<string>(k => k.Contains("ghproxy.com")), It.IsAny<Func<IDirectoryInfo, Task>>()))
-        .ReturnsAsync(mockDir);
+    List<string> cacheKeys = [];
+
+    _mockCacheService.Setup(c => c.GetOrCreateDirectory(It.IsAny<string>(), It.IsAny<Func<IDirectoryInfo, Task>>()))
+        .Returns(async (string key, Func<IDirectoryInfo, Task> factory) => {
+          cacheKeys.Add(key);
+          await factory(mockDir);
+          return mockDir;
+        });
 
     ISource result = await serviceWithProxy.Get(pkgSpec);
 
     Assert.IsType<DirectorySource>(result);
+
+    // A prefix mirror is followed by the whole target URL, host included. A bare path points at a
+    // repository that does not exist on the mirror.
+    _mockGitRunner.Verify(g => g.Clone(
+        "https://ghproxy.com/https://github.com/test/repo.git",
+        It.IsAny<string?>(),
+        "v1.0.0",
+        It.IsAny<int?>()), Times.Once);
+    _mockGitRunner.Verify(g => g.Clone(
+        "https://ghproxy.com/test/repo.git",
+        It.IsAny<string?>(),
+        It.IsAny<string?>(),
+        It.IsAny<int?>()), Times.Never);
+
+    // The cache key names the repository rather than the candidate that happened to serve it.
+    Assert.Equal(["git+https://github.com/test/repo.git#v1.0.0"], cacheKeys);
+  }
+
+  [Fact]
+  public async Task Get_PackageSpec_GitClone_TriesEveryCandidateInOrder() {
+    SourceService serviceWithProxy = new(
+        _mockFileDownloader.Object,
+        _mockGitRunner.Object,
+        _mockUserInteraction.Object,
+        _mockCacheService.Object,
+        proxySelector: new StubProxySelector(githubSources: [
+            new Url("https://ghproxy.com"),
+            new Url("https://ghfast.top"),
+            null,
+        ]));
+
+    PackageSpec pkgSpec = new(new PackageId("github.com/test/repo", string.Empty), new SemVersion(1, 0, 0));
+    string root = Path.GetPathRoot(Environment.CurrentDirectory) ?? "/";
+    string cacheRepo = Path.Combine(root, "cache", "repo");
+    MockFileSystem mockFs = new();
+    mockFs.AddDirectory(cacheRepo);
+    IDirectoryInfo mockDir = mockFs.DirectoryInfo.New(cacheRepo);
+
+    _mockCacheService.Setup(c => c.GetOrCreateFile(It.IsAny<string>(), It.IsAny<Func<IFileInfo, Task>>()))
+        .ThrowsAsync(new Exception("Go Proxy failed"));
+
+    List<string> cacheKeys = [];
+
+    _mockCacheService.Setup(c => c.GetOrCreateDirectory(It.IsAny<string>(), It.IsAny<Func<IDirectoryInfo, Task>>()))
+        .Returns(async (string key, Func<IDirectoryInfo, Task> factory) => {
+          cacheKeys.Add(key);
+          await factory(mockDir);
+          return mockDir;
+        });
+
+    List<string> attempted = [];
+
+    _mockGitRunner.Setup(g => g.Clone(
+        It.Is<string>(u => u.StartsWith("https://ghproxy.com/") || u.StartsWith("https://ghfast.top/")),
+        It.IsAny<string?>(),
+        It.IsAny<string?>(),
+        It.IsAny<int?>()))
+        .Callback((string repo, string? _, string? _, int? _) => attempted.Add(repo))
+        .ThrowsAsync(new CommandFailedException("git clone", 128, "repository not found"));
+
+    _mockGitRunner.Setup(g => g.Clone(
+        "https://github.com/test/repo.git",
+        It.IsAny<string?>(),
+        It.IsAny<string?>(),
+        It.IsAny<int?>()))
+        .Callback((string repo, string? _, string? _, int? _) => attempted.Add(repo))
+        .Returns(Task.CompletedTask);
+
+    ISource result = await serviceWithProxy.Get(pkgSpec);
+
+    Assert.IsType<DirectorySource>(result);
+    Assert.Equal(
+        [
+            "https://ghproxy.com/https://github.com/test/repo.git",
+            "https://ghfast.top/https://github.com/test/repo.git",
+            "https://github.com/test/repo.git",
+        ],
+        attempted);
+
+    // Every attempt shares one cache entry, so a checkout from one candidate is reused for another.
+    Assert.All(cacheKeys, key => Assert.Equal("git+https://github.com/test/repo.git#v1.0.0", key));
   }
 
   [Fact]
@@ -216,8 +301,7 @@ public class SourceServiceTests {
         _mockGitRunner.Object,
         _mockUserInteraction.Object,
         _mockCacheService.Object,
-        githubProxy: new Url("https://github.bibk.top"),
-        goModuleProxy: new Url("https://proxy.golang.org"));
+        proxySelector: new StubProxySelector(githubSources: [new Url("https://github.bibk.top"), null]));
 
     string root = Path.GetPathRoot(Environment.CurrentDirectory) ?? "/";
     string filePath = Path.Combine(root, "cache", "file.zip");
@@ -265,8 +349,7 @@ public class SourceServiceTests {
         _mockGitRunner.Object,
         _mockUserInteraction.Object,
         _mockCacheService.Object,
-        githubProxy: new Url("https://github.bibk.top"),
-        goModuleProxy: new Url("https://proxy.golang.org"));
+        proxySelector: new StubProxySelector(githubSources: [new Url("https://github.bibk.top"), null]));
 
     string root = Path.GetPathRoot(Environment.CurrentDirectory) ?? "/";
     string filePath = Path.Combine(root, "cache", "file.zip");

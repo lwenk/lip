@@ -12,7 +12,9 @@ public class RuntimeConfigTests {
     Assert.Equal(3, config.FormatVersion);
     Assert.Equal("289f771f-2c9a-4d73-9f3f-8492495a924d", config.FormatUuid);
     Assert.Null(config.GithubProxy);
-    Assert.Equal("https://proxy.golang.org", config.GoModuleProxy.ToString());
+    Assert.Null(config.GoModuleProxy);
+    Assert.Null(config.GithubMirrors);
+    Assert.Null(config.GoModuleMirrors);
   }
 
   [Fact]

@@ -41,9 +41,23 @@ public record RuntimeConfig {
   [JsonPropertyName("github_proxy")]
   public Url? GithubProxy { get; init; }
 
+  /// <summary>
+  /// Additional GitHub mirrors to probe alongside the built-in ones, in the form
+  /// <c>{mirror}/https://github.com/...</c>. Only used when <see cref="GithubProxy"/> is not set.
+  /// </summary>
+  [JsonPropertyName("github_mirrors")]
+  public List<Url>? GithubMirrors { get; init; }
+
   [JsonConverter(typeof(UrlJsonConverter))]
   [JsonPropertyName("go_module_proxy")]
-  public Url GoModuleProxy { get; init; } = Url.Parse("https://proxy.golang.org");
+  public Url? GoModuleProxy { get; init; }
+
+  /// <summary>
+  /// Additional Go module proxies to probe alongside the built-in ones. Only used when
+  /// <see cref="GoModuleProxy"/> is not set.
+  /// </summary>
+  [JsonPropertyName("go_module_mirrors")]
+  public List<Url>? GoModuleMirrors { get; init; }
 
   public IDictionary<string, dynamic?> AsDictionary() {
     return GetType()

@@ -1,20 +1,23 @@
 using Flurl;
 using Lip.Core.Entities;
 using Lip.Core.Infrastructure;
+using Lip.Core.Services;
 using Semver;
 
 namespace Lip.Core.PackageRegistries;
 
-public class GitPackageRegistry(IGitRunner gitRunner, Url? githubProxy) : IPackageRegistry {
+public class GitPackageRegistry(IGitRunner gitRunner, IProxySelector proxySelector) : IPackageRegistry {
   private readonly IGitRunner _gitRunner = gitRunner;
 
-  private readonly Url? _githubProxy = githubProxy;
+  private readonly IProxySelector _proxySelector = proxySelector;
 
   public async Task<IOrderedEnumerable<SemVersion>> GetAvailableVersions(PackageId packageId) {
     Url repoUrl = Url.Parse($"https://{packageId.Path}.git");
 
-    if (_githubProxy is not null && repoUrl.Host == "github.com") {
-      repoUrl = _githubProxy
+    Url? githubProxy = (await _proxySelector.OrderGithubSources()).FirstOrDefault(source => source is not null);
+
+    if (githubProxy is not null && repoUrl.Host == "github.com") {
+      repoUrl = githubProxy
           .Clone()
           .AppendPathSegments(repoUrl.PathSegments);
     }

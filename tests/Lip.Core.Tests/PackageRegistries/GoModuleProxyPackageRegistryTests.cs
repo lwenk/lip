@@ -12,7 +12,7 @@ public class GoModuleProxyPackageRegistryTests {
     // Arrange
     using HttpTest httpTest = new();
     Url proxyUrl = Url.Parse("https://proxy.golang.org");
-    GoModuleProxyPackageRegistry registry = new(proxyUrl);
+    GoModuleProxyPackageRegistry registry = new(new StubProxySelector(goModuleProxies: [proxyUrl]));
     PackageId pkgId = new("github.com/test/pkg", "");
 
     httpTest.RespondWith("v1.0.0\nv1.1.0\nv2.0.0-rc.1\ninvalid-version\n");
@@ -29,7 +29,7 @@ public class GoModuleProxyPackageRegistryTests {
 
   [Fact]
   public async Task GetPackageManifest_ThrowsNotSupportedException() {
-    GoModuleProxyPackageRegistry registry = new(new Url("https://proxy"));
+    GoModuleProxyPackageRegistry registry = new(new StubProxySelector());
     await Assert.ThrowsAsync<NotSupportedException>(() =>
         registry.GetPackageManifest(new PackageSpec(PackageId.Parse("github.com/test/repo"), new SemVersion(1, 0, 0))));
   }

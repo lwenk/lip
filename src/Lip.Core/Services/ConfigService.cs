@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Lip.Core.Entities;
 using Lip.Core.Infrastructure;
+using Lip.Core.Json;
 
 namespace Lip.Core.Services;
 
@@ -20,7 +21,8 @@ public class ConfigService(IFileSystem fileSystem, IUserInteraction userInteract
   private static readonly string _configPath = Path.Combine(
       Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "lip", "liprc.json");
   private static readonly JsonSerializerOptions _jsonSerializerOptions = new() {
-    WriteIndented = true
+    WriteIndented = true,
+    Converters = { new UrlJsonConverter() }
   };
 
   private readonly IFileSystem _fileSystem = fileSystem;
@@ -28,7 +30,7 @@ public class ConfigService(IFileSystem fileSystem, IUserInteraction userInteract
 
   public async Task Delete(string key) {
     RuntimeConfig config = await LoadConfig();
-    JsonNode json = JsonSerializer.SerializeToNode(config)!;
+    JsonNode json = JsonSerializer.SerializeToNode(config, _jsonSerializerOptions)!;
 
     if (key == "format_version"
         || key == "format_uuid"
@@ -38,13 +40,13 @@ public class ConfigService(IFileSystem fileSystem, IUserInteraction userInteract
 
     json.AsObject().Remove(key);
 
-    RuntimeConfig newConfig = json.Deserialize<RuntimeConfig>()!;
+    RuntimeConfig newConfig = json.Deserialize<RuntimeConfig>(_jsonSerializerOptions)!;
     await SaveConfig(newConfig);
   }
 
   public async Task<string> Get(string key) {
     RuntimeConfig config = await LoadConfig();
-    JsonNode json = JsonSerializer.SerializeToNode(config)!;
+    JsonNode json = JsonSerializer.SerializeToNode(config, _jsonSerializerOptions)!;
 
     if (key == "format_version"
         || key == "format_uuid"
@@ -70,7 +72,7 @@ public class ConfigService(IFileSystem fileSystem, IUserInteraction userInteract
 
   public async Task<IDictionary<string, string>> List() {
     RuntimeConfig config = await LoadConfig();
-    JsonNode json = JsonSerializer.SerializeToNode(config)!;
+    JsonNode json = JsonSerializer.SerializeToNode(config, _jsonSerializerOptions)!;
 
     return json.AsObject()
         .Where(kv => kv.Key != "format_version" && kv.Key != "format_uuid")
@@ -79,7 +81,7 @@ public class ConfigService(IFileSystem fileSystem, IUserInteraction userInteract
 
   public async Task Set(string key, string value) {
     RuntimeConfig config = await LoadConfig();
-    JsonNode json = JsonSerializer.SerializeToNode(config)!;
+    JsonNode json = JsonSerializer.SerializeToNode(config, _jsonSerializerOptions)!;
 
     if (key == "format_version"
         || key == "format_uuid"
@@ -87,10 +89,19 @@ public class ConfigService(IFileSystem fileSystem, IUserInteraction userInteract
       throw new KeyNotFoundException($"Configuration key '{key}' not found.");
     }
 
-    json[key] = value;
+    // Mirror lists are entered as comma-separated URLs and stored as JSON arrays.
+    json[key] = IsUrlListKey(key)
+        ? new JsonArray([.. value
+            .Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .Select(entry => JsonValue.Create(entry))])
+        : value;
 
-    RuntimeConfig newConfig = json.Deserialize<RuntimeConfig>()!;
+    RuntimeConfig newConfig = json.Deserialize<RuntimeConfig>(_jsonSerializerOptions)!;
     await SaveConfig(newConfig);
+  }
+
+  private static bool IsUrlListKey(string key) {
+    return key is "github_mirrors" or "go_module_mirrors";
   }
 
   private async Task<RuntimeConfig> LoadConfig() {

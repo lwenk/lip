@@ -13,7 +13,7 @@ public class GitPackageRegistryTests {
   [InlineData("github.com/LiteLDev/LeviLamina#client", 17)]
   public async Task GetAvailableVersions_ReturnsSortedMinCount(string packageId, int minVersionCount) {
     GitRunner gitRunner = new();
-    GitPackageRegistry registry = new(gitRunner, githubProxy: null);
+    GitPackageRegistry registry = new(gitRunner, new StubProxySelector());
 
     IOrderedEnumerable<SemVersion> versions = await registry.GetAvailableVersions(PackageId.Parse(packageId));
 

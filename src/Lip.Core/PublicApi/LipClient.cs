@@ -52,8 +52,17 @@ public class LipClient(
     CacheService cacheService = new(fileSystem, userInteraction);
     FileDownloader fileDownloader = new(userInteraction);
     Url? githubProxy = await configService.Get<Url?>("github_proxy");
-    Url goModuleProxy = await configService.Get<Url>("go_module_proxy");
+    Url? goModuleProxy = await configService.Get<Url?>("go_module_proxy");
+    IReadOnlyList<Url> githubMirrors = await configService.Get<IReadOnlyList<Url>>("github_mirrors") ?? [];
+    IReadOnlyList<Url> goModuleMirrors = await configService.Get<IReadOnlyList<Url>>("go_module_mirrors") ?? [];
     GitRunner gitRunner = new();
+
+    ProxySelector proxySelector = new(fileSystem, userInteraction, new() {
+      FixedGithubProxy = githubProxy,
+      GithubMirrors = githubMirrors,
+      FixedGoModuleProxy = goModuleProxy,
+      GoModuleMirrors = goModuleMirrors,
+    });
 
     CommandRunner commandRunner = new();
     SourceService sourceService = new(
@@ -61,8 +70,7 @@ public class LipClient(
         gitRunner,
         userInteraction,
         cacheService,
-        githubProxy,
-        goModuleProxy);
+        proxySelector);
     WorkspaceService workspaceService = new(fileSystem);
 
     PackageInstaller packageInstaller = new(
@@ -74,9 +82,9 @@ public class LipClient(
     CompositePackageRegistry packageRegistry = new([
       [new WorkspaceServicePackageRegistry(workspaceService)],
       [
-        new GoModuleProxyPackageRegistry(goModuleProxy),
+        new GoModuleProxyPackageRegistry(proxySelector),
         new LiprPackageRegistry(),
-        new GitPackageRegistry(gitRunner, githubProxy),
+        new GitPackageRegistry(gitRunner, proxySelector),
       ],
       [new SourceServicePackageRegistry(sourceService)],
     ]);
@@ -129,62 +137,14 @@ public class LipClient(
   }
 
   public async Task Install(IEnumerable<string> packages, bool dryRun, bool ignoreScripts, bool noDependencies) {
-    List<PackageSpec> parsedPackages = [];
-    List<PackageId> flexiblePackages = [];
-    List<LocalPackageSpec> localPackages = [];
-    List<RemotePackageSpec> remotePackages = [];
-
-    foreach (string package in packages) {
-      // Order of parsing is:
-      // 1. PackageSpec
-      // 2. PackageId (flexible package)
-      // 3. Local file
-      // 4. Remote URL
-
-      List<Exception> exceptions = [];
-
-      try {
-        PackageSpec packageSpec = PackageSpec.Parse(package);
-        parsedPackages.Add(packageSpec);
-        continue;
-      }
-      catch (Exception ex) {
-        exceptions.Add(ex);
-      }
-
-      try {
-        PackageId packageId = PackageId.Parse(package);
-        flexiblePackages.Add(packageId);
-        continue;
-      }
-      catch (Exception ex) {
-        exceptions.Add(ex);
-      }
-
-      try {
-        LocalPackageSpec localPackageSpec = LocalPackageSpec.Parse(package, _fileSystem);
-        localPackages.Add(localPackageSpec);
-        continue;
-      }
-      catch (Exception ex) {
-        exceptions.Add(ex);
-      }
-
-      try {
-        RemotePackageSpec remotePackage = RemotePackageSpec.Parse(package);
-        remotePackages.Add(remotePackage);
-        continue;
-      }
-      catch (Exception ex) {
-        exceptions.Add(ex);
-      }
-
-      throw new AggregateException($"Failed to parse package '{package}'.", exceptions);
-    }
+    (List<PackageSpec> packageSpecs,
+        List<PackageId> packageIds,
+        List<LocalPackageSpec> localPackages,
+        List<RemotePackageSpec> remotePackages) = ParsePackageArguments(packages);
 
     await _installService.InstallPackages(
-        parsedPackages,
-        flexiblePackages,
+        packageSpecs,
+        packageIds,
         localPackages,
         remotePackages,
         dryRun,
@@ -220,56 +180,14 @@ public class LipClient(
   }
 
   public Task Update(IEnumerable<string> packages, bool dryRun, bool ignoreScripts) {
-    IEnumerable<PackageSpec> parsedPackages = [];
-    IEnumerable<PackageId> flexiblePackages = [];
-    IEnumerable<LocalPackageSpec> localPackages = [];
-    IEnumerable<RemotePackageSpec> remotePackages = [];
-
-    foreach (string package in packages) {
-      List<Exception> exceptions = [];
-
-      try {
-        PackageSpec packageSpec = PackageSpec.Parse(package);
-        parsedPackages = parsedPackages.Append(packageSpec);
-        continue;
-      }
-      catch (Exception ex) {
-        exceptions.Add(ex);
-      }
-
-      try {
-        PackageId packageId = PackageId.Parse(package);
-        flexiblePackages = flexiblePackages.Append(packageId);
-        continue;
-      }
-      catch (Exception ex) {
-        exceptions.Add(ex);
-      }
-
-      try {
-        LocalPackageSpec localPackageSpec = LocalPackageSpec.Parse(package, _fileSystem);
-        localPackages = localPackages.Append(localPackageSpec);
-        continue;
-      }
-      catch (Exception ex) {
-        exceptions.Add(ex);
-      }
-
-      try {
-        RemotePackageSpec remotePackage = RemotePackageSpec.Parse(package);
-        remotePackages = remotePackages.Append(remotePackage);
-        continue;
-      }
-      catch (Exception ex) {
-        exceptions.Add(ex);
-      }
-
-      throw new AggregateException($"Failed to parse package '{package}'.", exceptions);
-    }
+    (List<PackageSpec> packageSpecs,
+        List<PackageId> packageIds,
+        List<LocalPackageSpec> localPackages,
+        List<RemotePackageSpec> remotePackages) = ParsePackageArguments(packages);
 
     return _installService.UpdatePackages(
-        parsedPackages,
-        flexiblePackages,
+        packageSpecs,
+        packageIds,
         localPackages,
         remotePackages,
         dryRun,
@@ -309,5 +227,59 @@ public class LipClient(
 
     throw new AggregateException(
         $"Failed to parse package '{package}' or retrieve its manifest.", exceptions);
+  }
+
+  /// <summary>
+  /// Parses package arguments, trying in order: an exact package spec, a bare package ID, a local
+  /// archive path, and finally a remote archive URL.
+  /// </summary>
+  private (List<PackageSpec> PackageSpecs,
+      List<PackageId> PackageIds,
+      List<LocalPackageSpec> LocalPackages,
+      List<RemotePackageSpec> RemotePackages) ParsePackageArguments(IEnumerable<string> packages) {
+    List<PackageSpec> packageSpecs = [];
+    List<PackageId> packageIds = [];
+    List<LocalPackageSpec> localPackages = [];
+    List<RemotePackageSpec> remotePackages = [];
+
+    foreach (string package in packages) {
+      List<Exception> exceptions = [];
+
+      try {
+        packageSpecs.Add(PackageSpec.Parse(package));
+        continue;
+      }
+      catch (Exception ex) {
+        exceptions.Add(ex);
+      }
+
+      try {
+        packageIds.Add(PackageId.Parse(package));
+        continue;
+      }
+      catch (Exception ex) {
+        exceptions.Add(ex);
+      }
+
+      try {
+        localPackages.Add(LocalPackageSpec.Parse(package, _fileSystem));
+        continue;
+      }
+      catch (Exception ex) {
+        exceptions.Add(ex);
+      }
+
+      try {
+        remotePackages.Add(RemotePackageSpec.Parse(package));
+        continue;
+      }
+      catch (Exception ex) {
+        exceptions.Add(ex);
+      }
+
+      throw new AggregateException($"Failed to parse package '{package}'.", exceptions);
+    }
+
+    return (packageSpecs, packageIds, localPackages, remotePackages);
   }
 }
