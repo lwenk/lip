@@ -29,7 +29,12 @@ public class UninstallCommand(ILipClient lipClient, IUserInteraction userInterac
 
   protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken) {
     await _lipClient.Uninstall(settings.Packages, settings.DryRun, settings.IgnoreScripts, settings.NoDependencies);
-    await _userInteraction.PrintSuccess("Packages uninstalled successfully.");
+
+    // A dry run changed nothing, so claiming success would be a lie.
+    if (!settings.DryRun) {
+      await _userInteraction.PrintSuccess("Packages uninstalled successfully.");
+    }
+
     return 0;
   }
 }

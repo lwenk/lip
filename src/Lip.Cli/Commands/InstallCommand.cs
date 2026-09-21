@@ -29,7 +29,12 @@ public class InstallCommand(ILipClient lipClient, IUserInteraction userInteracti
 
   protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken) {
     await _lipClient.Install(settings.Packages, settings.DryRun, settings.IgnoreScripts, settings.NoDependencies);
-    await _userInteraction.PrintSuccess("Packages installed successfully.");
+
+    // A dry run changed nothing, so claiming success would be a lie.
+    if (!settings.DryRun) {
+      await _userInteraction.PrintSuccess("Packages installed successfully.");
+    }
+
     return 0;
   }
 }

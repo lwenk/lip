@@ -337,6 +337,122 @@ public class InstallServiceTests {
   }
 
   [Fact]
+  public async Task UninstallPackages_DependencyWithANewerReleaseAvailable_IsKept() {
+    // Arrange
+    PackageId keepId = new("github.com/test/keep", "");
+    PackageId removeId = new("github.com/test/remove", "");
+    PackageId depId = new("github.com/test/dep", "");
+
+    PackageSpec keepSpec = new(keepId, new SemVersion(1, 0, 0));
+    PackageSpec removeSpec = new(removeId, new SemVersion(1, 0, 0));
+    PackageSpec depSpec = new(depId, new SemVersion(1, 0, 0));
+
+    _mockWorkspaceService.Setup(w => w.GetInstalledPackages(IWorkspaceService.PackageScope.Explicit))
+        .ReturnsAsync([keepSpec, removeSpec]);
+    _mockWorkspaceService.Setup(w => w.GetInstalledPackages(IWorkspaceService.PackageScope.All))
+        .ReturnsAsync([depSpec, keepSpec, removeSpec]);
+
+    // The registry offers a newer release of the dependency. Resolving against it would decide the
+    // installed 1.0.0 is unnecessary and delete it without installing 1.1.0.
+    _mockPackageRegistry.Setup(r => r.GetAvailableVersions(depId))
+        .ReturnsAsync(new[] { new SemVersion(1, 0, 0), new SemVersion(1, 1, 0) }
+            .Order(SemVersion.PrecedenceComparer));
+
+    _mockWorkspaceService.Setup(w => w.GetInstalledPackageManifest(keepSpec))
+        .ReturnsAsync(new PackageManifest {
+          Path = "github.com/test/keep",
+          Version = new SemVersion(1, 0, 0),
+          Variants = [new() { Dependencies = { [depId] = SemVersionRange.Parse("1.*") } }]
+        });
+    _mockWorkspaceService.Setup(w => w.GetInstalledPackageManifest(depSpec))
+        .ReturnsAsync(new PackageManifest {
+          Path = "github.com/test/dep",
+          Version = new SemVersion(1, 0, 0),
+          Variants = [new()]
+        });
+
+    // Act
+    await _service.UninstallPackages([removeId], false, false, false);
+
+    // Assert
+    _mockPackageInstaller.Verify(i => i.UninstallPackage(removeId, false, false), Times.Once);
+    _mockPackageInstaller.Verify(
+        i => i.UninstallPackage(depId, It.IsAny<bool>(), It.IsAny<bool>()), Times.Never);
+    _mockPackageInstaller.Verify(
+        i => i.UninstallPackage(keepId, It.IsAny<bool>(), It.IsAny<bool>()), Times.Never);
+    _mockPackageRegistry.Verify(
+        r => r.GetAvailableVersions(It.IsAny<PackageId>()), Times.Never);
+  }
+
+  [Fact]
+  public async Task UninstallPackages_DependencyNoLongerRequired_IsRemoved() {
+    // Arrange
+    PackageId rootId = new("github.com/test/root", "");
+    PackageId depId = new("github.com/test/dep", "");
+
+    PackageSpec rootSpec = new(rootId, new SemVersion(1, 0, 0));
+    PackageSpec depSpec = new(depId, new SemVersion(1, 0, 0));
+
+    _mockWorkspaceService.Setup(w => w.GetInstalledPackages(IWorkspaceService.PackageScope.Explicit))
+        .ReturnsAsync([rootSpec]);
+    _mockWorkspaceService.Setup(w => w.GetInstalledPackages(IWorkspaceService.PackageScope.All))
+        .ReturnsAsync([depSpec, rootSpec]);
+
+    // Act
+    await _service.UninstallPackages([rootId], false, false, false);
+
+    // Assert
+    _mockPackageInstaller.Verify(i => i.UninstallPackage(rootId, false, false), Times.Once);
+    _mockPackageInstaller.Verify(i => i.UninstallPackage(depId, false, false), Times.Once);
+  }
+
+  [Fact]
+  public async Task UpdatePackages_NoPackagesSpecified_UpdatesEveryExplicitPackage() {
+    // Arrange
+    PackageId firstId = new("github.com/test/first", "");
+    PackageId secondId = new("github.com/test/second", "");
+
+    PackageSpec firstOld = new(firstId, new SemVersion(1, 0, 0));
+    PackageSpec secondOld = new(secondId, new SemVersion(1, 0, 0));
+    PackageSpec firstNew = new(firstId, new SemVersion(1, 1, 0));
+    PackageSpec secondNew = new(secondId, new SemVersion(1, 1, 0));
+
+    _mockWorkspaceService.Setup(w => w.GetInstalledPackages(IWorkspaceService.PackageScope.Explicit))
+        .ReturnsAsync([firstOld, secondOld]);
+    _mockWorkspaceService.Setup(w => w.GetInstalledPackages(IWorkspaceService.PackageScope.All))
+        .ReturnsAsync([firstOld, secondOld]);
+
+    foreach ((PackageId id, PackageSpec spec) in new[] { (firstId, firstNew), (secondId, secondNew) }) {
+      _mockPackageRegistry.Setup(r => r.GetAvailableVersions(id))
+          .ReturnsAsync(new[] { new SemVersion(1, 0, 0), new SemVersion(1, 1, 0) }
+              .Order(SemVersion.PrecedenceComparer));
+      _mockSourceService.Setup(s => s.Get(spec))
+          .ReturnsAsync(CreateSourceWithManifest(id.Path, spec.Version));
+    }
+
+    // The packages kept at their installed version still need a manifest for their dependencies.
+    _mockPackageRegistry.Setup(r => r.GetPackageManifest(It.IsAny<PackageSpec>()))
+        .ReturnsAsync((PackageSpec spec) => new PackageManifest {
+          Path = spec.Id.Path,
+          Version = spec.Version,
+          Variants = [new()]
+        });
+
+    // Act
+    await _service.UpdatePackages([], [], [], [], false, false);
+
+    // Assert
+    foreach ((PackageSpec oldSpec, PackageSpec newSpec) in
+        new[] { (firstOld, firstNew), (secondOld, secondNew) }) {
+      _mockPackageInstaller.Verify(
+          i => i.UninstallPackage(oldSpec.Id, false, false), Times.Once);
+      _mockPackageInstaller.Verify(
+          i => i.InstallPackage(It.Is<PackageArtifact>(pa => pa.Spec == newSpec), false, true, false),
+          Times.Once);
+    }
+  }
+
+  [Fact]
   public async Task UpdatePackages_NotInstalled_ThrowsException() {
     PackageSpec pkgSpec = new(new PackageId("github.com/test/pkg", ""), new SemVersion(2));
     Mock<ISource> mockSource = new();
@@ -347,5 +463,91 @@ public class InstallServiceTests {
 
     await Assert.ThrowsAsync<InvalidOperationException>(() =>
         _service.UpdatePackages([pkgSpec], [], [], [], false, false));
+  }
+
+  [Fact]
+  public async Task UpdatePackages_OnePackageCannotBeUpdated_UpdatesTheOthers() {
+    // Arrange
+    PackageId brokenId = new("github.com/test/broken", "");
+    PackageId goodId = new("github.com/test/good", "");
+
+    PackageSpec brokenOld = new(brokenId, new SemVersion(1, 0, 0));
+    PackageSpec goodOld = new(goodId, new SemVersion(1, 0, 0));
+    PackageSpec brokenNew = new(brokenId, new SemVersion(1, 1, 0));
+    PackageSpec goodNew = new(goodId, new SemVersion(1, 1, 0));
+
+    _mockWorkspaceService.Setup(w => w.GetInstalledPackages(IWorkspaceService.PackageScope.Explicit))
+        .ReturnsAsync([brokenOld, goodOld]);
+    _mockWorkspaceService.Setup(w => w.GetInstalledPackages(IWorkspaceService.PackageScope.All))
+        .ReturnsAsync([brokenOld, goodOld]);
+
+    foreach (PackageId id in new[] { brokenId, goodId }) {
+      _mockPackageRegistry.Setup(r => r.GetAvailableVersions(id))
+          .ReturnsAsync(new[] { new SemVersion(1, 0, 0), new SemVersion(1, 1, 0) }
+              .Order(SemVersion.PrecedenceComparer));
+    }
+
+    // The newest release of one package requires something that does not exist anywhere, so resolving
+    // it can only fail; the other package must still be updated.
+    _mockSourceService.Setup(s => s.Get(brokenNew))
+        .ReturnsAsync(CreateSourceWithManifest(
+            brokenId.Path, brokenNew.Version, """ "github.com/test/missing": "1.*" """));
+    _mockSourceService.Setup(s => s.Get(goodNew))
+        .ReturnsAsync(CreateSourceWithManifest(goodId.Path, goodNew.Version));
+
+    _mockPackageRegistry.Setup(r => r.GetPackageManifest(It.IsAny<PackageSpec>()))
+        .ReturnsAsync((PackageSpec spec) => new PackageManifest {
+          Path = spec.Id.Path,
+          Version = spec.Version,
+          Variants = [new()]
+        });
+
+    // Act
+    await _service.UpdatePackages([], [], [], [], false, false);
+
+    // Assert
+    _mockLogger.Verify(
+        u => u.PrintInfo(It.Is<string>(message => message.Contains("→")
+            && message.Contains("github.com/test/broken"))),
+        Times.Once);
+    _mockLogger.Verify(
+        u => u.PrintWarning(It.Is<string>(message => message.Contains("Failed to update")
+            && message.Contains("github.com/test/broken"))),
+        Times.Once);
+    _mockPackageInstaller.Verify(
+        i => i.InstallPackage(It.Is<PackageArtifact>(pa => pa.Spec == goodNew), false, true, false),
+        Times.Once);
+    _mockPackageInstaller.Verify(
+        i => i.InstallPackage(It.Is<PackageArtifact>(pa => pa.Spec == brokenNew),
+            It.IsAny<bool>(), It.IsAny<bool>(), It.IsAny<bool>()),
+        Times.Never);
+  }
+
+  private static ISource CreateSourceWithManifest(
+      string path,
+      SemVersion version,
+      string dependencies = "") {
+    string manifestJson = $$"""
+            {
+                "format_version": 3,
+                "format_uuid": "289f771f-2c9a-4d73-9f3f-8492495a924d",
+                "tooth": "{{path}}",
+                "version": "{{version}}",
+                "variants": [
+                    {
+                        "dependencies": {
+                            {{dependencies}}
+                        }
+                    }
+                ]
+            }
+            """;
+
+    Mock<ISource> source = new();
+    source.Setup(s => s.OpenRead("tooth.json"))
+        .Returns(() => Task.FromResult<Stream>(
+            new MemoryStream(System.Text.Encoding.UTF8.GetBytes(manifestJson))));
+
+    return source.Object;
   }
 }

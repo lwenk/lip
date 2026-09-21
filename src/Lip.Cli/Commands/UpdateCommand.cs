@@ -10,9 +10,9 @@ public class UpdateCommand(ILipClient lipClient, IUserInteraction userInteractio
   private readonly IUserInteraction _userInteraction = userInteraction;
 
   public class Settings : CommandSettings {
-    [CommandArgument(0, "<PACKAGES>")]
-    [Description("The packages to update")]
-    public required string[] Packages { get; init; }
+    [CommandArgument(0, "[PACKAGES]")]
+    [Description("The packages to update. Omit to update every explicitly installed package.")]
+    public string[] Packages { get; init; } = [];
 
     [CommandOption("-n|--dry-run")]
     [Description("Run without making any changes")]
@@ -25,7 +25,12 @@ public class UpdateCommand(ILipClient lipClient, IUserInteraction userInteractio
 
   protected override async Task<int> ExecuteAsync(CommandContext context, Settings settings, CancellationToken cancellationToken) {
     await _lipClient.Update(settings.Packages, settings.DryRun, settings.IgnoreScripts);
-    await _userInteraction.PrintSuccess("Packages updated successfully.");
+
+    // A dry run changed nothing, so claiming success would be a lie.
+    if (!settings.DryRun) {
+      await _userInteraction.PrintSuccess("Packages updated successfully.");
+    }
+
     return 0;
   }
 }
