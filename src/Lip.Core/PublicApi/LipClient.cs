@@ -63,7 +63,7 @@ public class LipClient(
         cacheService,
         githubProxy,
         goModuleProxy);
-    WorkspaceService workspaceService = new(fileSystem, userInteraction);
+    WorkspaceService workspaceService = new(fileSystem);
 
     PackageInstaller packageInstaller = new(
         commandRunner,

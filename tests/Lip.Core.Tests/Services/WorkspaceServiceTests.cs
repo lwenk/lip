@@ -1,22 +1,18 @@
 using System.IO.Abstractions;
 using System.IO.Abstractions.TestingHelpers;
 using Lip.Core.Entities;
-using Lip.Core.Infrastructure;
 using Lip.Core.Services;
-using Moq;
 using Semver;
 
 namespace Lip.Core.Tests.Services;
 
 public class WorkspaceServiceTests {
   private readonly MockFileSystem _fileSystem;
-  private readonly Mock<IUserInteraction> _userInteraction;
   private readonly WorkspaceService _service;
 
   public WorkspaceServiceTests() {
     _fileSystem = new MockFileSystem();
-    _userInteraction = new Mock<IUserInteraction>();
-    _service = new WorkspaceService(_fileSystem, _userInteraction.Object);
+    _service = new WorkspaceService(_fileSystem);
   }
 
   [Fact]
@@ -176,5 +172,120 @@ public class WorkspaceServiceTests {
     await _service.AddInstalledPackage(pkgSpec, manifest, [], true);
 
     Assert.True(_fileSystem.File.Exists("tooth_lock.json"));
+  }
+
+  [Fact]
+  public async Task AddInstalledPackage_StoresWorkspaceRelativeFilePaths() {
+    PackageSpec pkgSpec = new(new PackageId("github.com/test/repo", ""), new SemVersion(1, 0, 0));
+    PackageManifest manifest = new() { Path = "github.com/test/repo", Version = new SemVersion(1, 0, 0), Variants = [new()] };
+
+    string filePath = _fileSystem.Path.Combine("plugins", "nested", "file.dll");
+    await _service.AddInstalledPackage(pkgSpec, manifest, [_fileSystem.FileInfo.New(filePath)], true);
+
+    string lockFileContent = _fileSystem.File.ReadAllText("tooth_lock.json");
+    Assert.Contains("plugins/nested/file.dll", lockFileContent);
+
+    // The relative path must still resolve back to the same file.
+    IFileInfo storedFile = (await _service.GetInstalledPackageFiles(pkgSpec)).Single();
+    Assert.Equal(_fileSystem.Path.GetFullPath(filePath), storedFile.FullName);
+  }
+
+  [Fact]
+  public async Task GetInstalledPackageFiles_AbsolutePathFromLegacyLockFile_IsHonoured() {
+    PackageSpec pkgSpec = new(new PackageId("github.com/test/repo", ""), new SemVersion(1, 0, 0));
+    string absolutePath = _fileSystem.Path.Combine(
+        _fileSystem.Directory.GetCurrentDirectory(), "plugins", "file.dll");
+
+    _fileSystem.AddFile("tooth_lock.json", new MockFileData($$"""
+        {
+          "packages": [
+            {
+              "files": [{{System.Text.Json.JsonSerializer.Serialize(absolutePath)}}],
+              "locked": true,
+              "manifest": {
+                "format_version": 3,
+                "format_uuid": "289f771f-2c9a-4d73-9f3f-8492495a924d",
+                "tooth": "github.com/test/repo",
+                "version": "1.0.0",
+                "variants": []
+              },
+              "variant": ""
+            }
+          ]
+        }
+        """));
+
+    IFileInfo storedFile = (await _service.GetInstalledPackageFiles(pkgSpec)).Single();
+
+    Assert.Equal(absolutePath, storedFile.FullName);
+  }
+
+  [Fact]
+  public async Task UpdateInstalledPackageExplicitness_NormalizesLegacyLockFilePaths() {
+    PackageSpec pkgSpec = new(new PackageId("github.com/test/repo", ""), new SemVersion(1, 0, 0));
+    string workspaceRoot = _fileSystem.Directory.GetCurrentDirectory();
+    string insidePath = _fileSystem.Path.Combine(workspaceRoot, "plugins", "file.dll");
+
+    // A path on another drive can never be inside the workspace, whatever the mock's default
+    // current directory is.
+    string otherDrive = _fileSystem.Path.GetPathRoot(workspaceRoot)!.StartsWith("C:", StringComparison.OrdinalIgnoreCase)
+        ? @"D:\"
+        : @"C:\";
+    string outsidePath = _fileSystem.Path.Combine(otherDrive, "elsewhere", "file.dll");
+
+    _fileSystem.AddFile("tooth_lock.json", new MockFileData($$"""
+        {
+          "packages": [
+            {
+              "files": [
+                {{System.Text.Json.JsonSerializer.Serialize(insidePath)}},
+                {{System.Text.Json.JsonSerializer.Serialize(outsidePath)}}
+              ],
+              "locked": false,
+              "manifest": {
+                "format_version": 3,
+                "format_uuid": "289f771f-2c9a-4d73-9f3f-8492495a924d",
+                "tooth": "github.com/test/repo",
+                "version": "1.0.0",
+                "variants": []
+              },
+              "variant": ""
+            }
+          ]
+        }
+        """));
+
+    await _service.UpdateInstalledPackageExplicitness(pkgSpec, isExplicit: true);
+
+    string lockFileContent = _fileSystem.File.ReadAllText("tooth_lock.json");
+
+    // A path inside the workspace is stored relative to it, so the lockfile keeps working after the
+    // workspace is copied or moved.
+    Assert.Contains("plugins/file.dll", lockFileContent);
+    Assert.DoesNotContain(System.Text.Json.JsonSerializer.Serialize(insidePath), lockFileContent);
+
+    // A path outside the workspace is left alone: rewriting it relative to this workspace would
+    // silently point it at a different file.
+    Assert.Contains(System.Text.Json.JsonSerializer.Serialize(outsidePath), lockFileContent);
+  }
+
+  [Fact]
+  public async Task GetInstalledPackages_CorruptLockFile_ThrowsInsteadOfReportingEmptyWorkspace() {
+    _fileSystem.AddFile("tooth_lock.json", new MockFileData("{ \"packages\": ["));
+
+    InvalidOperationException exception = await Assert.ThrowsAsync<InvalidOperationException>(
+        () => _service.GetInstalledPackages(IWorkspaceService.PackageScope.All));
+
+    Assert.Contains("tooth_lock.json", exception.Message);
+  }
+
+  [Fact]
+  public async Task SaveWorkspaceState_LeavesNoTemporaryFilesBehind() {
+    PackageSpec pkgSpec = new(new PackageId("github.com/test/repo", ""), new SemVersion(1, 0, 0));
+    PackageManifest manifest = new() { Path = "github.com/test/repo", Version = new SemVersion(1, 0, 0), Variants = [new()] };
+
+    await _service.AddInstalledPackage(pkgSpec, manifest, [], true);
+
+    Assert.Empty(_fileSystem.Directory.GetFiles(".", "*.tmp"));
   }
 }
